@@ -1,5 +1,6 @@
-httpx==0.25.2
-flask==2.3.3
-pycryptodome==3.18.0
-protobuf==6.30.0
-pyjwt==2.8.0
+flask
+requests
+PyJWT
+urllib3
+pycryptodome
+protobuf

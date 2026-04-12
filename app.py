@@ -1,213 +1,351 @@
-import httpx
-import time
-import re
+from flask import Flask, request, jsonify, Response
+import requests
+import jwt
+import urllib3
+import json
+from collections import OrderedDict
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import json
-from flask import Flask, request, jsonify
-from datetime import datetime
-import data_pb2
-import encode_id_clan_pb2
-import reqClan_pb2
-import jwt as pyjwt
+import ReqCLan_pb2
+import QuitClanReq_pb2
+import my_pb2
+import output_pb2
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
-freefire_version = "OB52"
-key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
-iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
 
-JWT_REGEX = re.compile(r'(eyJ[A-Za-z0-9_\-\.=]+)')
+OB = "OB53"
 
-def get_jwt_token_from_api(uid, password):
-    data_param = f"{uid}:{password}"
-    url = f"https://api.freefireservice.dnc.su/oauth/account:login?data={data_param}"
-    
+API_INFO = {
+    "developer": "RIZER",
+    "telegram": "@Beotherjk",
+    "api_name": "FF GUILD JOIN/LEAVE API",
+    "version": OB
+}
+
+# Crypto keys (same as original)
+KEY = bytes([89,103,38,116,99,37,68,69,117,104,54,37,90,99,94,56])
+IV  = bytes([54,111,121,90,68,114,50,50,69,51,121,99,104,106,77,37])
+
+# Headers used for game requests
+GAME_HEADERS = {
+    "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9)",
+    "Connection": "Keep-Alive",
+    "Accept-Encoding": "gzip",
+    "Content-Type": "application/octet-stream",
+    "X-Unity-Version": "2018.4.11f1",
+    "X-GA": "v1 1",
+    "ReleaseVersion": OB,
+    "Expect": "100-continue"
+}
+
+LOGIN_HEADERS = GAME_HEADERS.copy()
+
+# Region → Server URL mapping
+REGION_SERVER_MAP = {
+    "IND": "https://client.ind.freefiremobile.com",   # India
+    "ME":  "https://clientbp.ggblueshark.com",        # Middle East
+    "VN":  "https://clientbp.ggpolarbear.com",        # Vietnam
+    "BD":  "https://clientbp.ggwhitehawk.com",        # Bangladesh
+    "PK":  "https://clientbp.ggblueshark.com",        # Pakistan
+    "SG":  "https://clientbp.ggpolarbear.com",        # Singapore
+    "BR":  "https://client.us.freefiremobile.com",    # Brazil
+    "NA":  "https://client.us.freefiremobile.com",    # North America
+    "ID":  "https://clientbp.ggpolarbear.com",        # Indonesia
+    "RU":  "https://clientbp.ggpolarbear.com",        # Russia
+    "TH":  "https://clientbp.ggpolarbear.com",        # Thailand
+}
+DEFAULT_SERVER_URL = "https://clientbp.ggblueshark.com"   # fallback
+LOGIN_URL = "https://loginbp.ggpolarbear.com"             # same for all regions
+
+# Helper: encrypt payload with AES-CBC
+def encrypt_payload(data):
+    cipher = AES.new(KEY, AES.MODE_CBC, IV)
+    return cipher.encrypt(pad(data, AES.block_size))
+
+# Helper: decode JWT without verifying signature
+def decode_jwt(token):
     try:
-        response = httpx.get(url, timeout=15.0)
-        token_candidate = None
-        
-        try:
-            j = response.json()
-            for k in ("token", "jwt", "access_token", "data", "auth"):
-                v = j.get(k)
-                if isinstance(v, str) and v.startswith("ey"):
-                    token_candidate = v
-                    break
-        except Exception:
-            pass
-        
-        if not token_candidate:
-            m = JWT_REGEX.search(response.text)
-            if m:
-                token_candidate = m.group(1)
-        
-        if not token_candidate:
-            for hv in response.headers.values():
-                m = JWT_REGEX.search(hv)
-                if m:
-                    token_candidate = m.group(1)
-                    break
-        
-        return token_candidate
-            
+        decoded = jwt.decode(token, options={"verify_signature": False})
+        account_id = str(decoded.get("account_id"))
+        nickname = decoded.get("nickname")
+        lock_region = decoded.get("lock_region")
+        return account_id, nickname, lock_region
+    except Exception:
+        return None, None, None
+
+# Helper: get server URL based on region (with fallback)
+def get_server_url(region):
+    return REGION_SERVER_MAP.get(region, DEFAULT_SERVER_URL)
+
+# Perform major login (used when using UID/pass)
+def perform_major_login(access_token, open_id):
+    try:
+        game = my_pb2.GameData()
+        game.timestamp = "2024-12-05 18:15:32"
+        game.game_name = "free fire"
+        game.game_version = 1
+        game.version_code = "1.123.2"
+        game.os_info = "Android OS 12 / API-31"
+        game.device_type = "Handheld"
+        game.network_provider = "Verizon"
+        game.connection_type = "WIFI"
+        game.screen_width = 1080
+        game.screen_height = 2340
+        game.dpi = "420"
+        game.cpu_info = "ARM64"
+        game.total_ram = 5951
+        game.gpu_name = "Adreno"
+        game.gpu_version = "OpenGL ES 3.0"
+        game.user_id = "Google|dummy"
+        game.ip_address = "172.190.111.97"
+        game.language = "en"
+        game.open_id = open_id
+        game.access_token = access_token
+        game.platform_type = 4   # single platform
+        game.field_99 = "4"
+        game.field_100 = "4"
+        encrypted = encrypt_payload(game.SerializeToString())
+        r = requests.post(LOGIN_URL, headers=LOGIN_HEADERS, data=encrypted, verify=False, timeout=10)
+        print("MajorLogin status:", r.status_code)
+        if r.status_code == 200 and len(r.content) > 5:
+            msg = output_pb2.Garena_420()
+            msg.ParseFromString(r.content)
+            if msg.token:
+                print("JWT generated successfully")
+                return msg.token
     except Exception as e:
-        print(f"JWT Token API Error: {e}")
-        return None
+        print("Login attempt failed:", e)
+    return None
 
-def get_region_from_jwt(jwt_token):
+# Guest login (UID/pass) -> access_token + open_id
+def guest_login(uid, password):
+    payload = {
+        "uid": uid,
+        "password": password,
+        "response_type": "token",
+        "client_type": "2",
+        "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
+        "client_id": "100067"
+    }
+    headers = {"User-Agent": "GarenaMSDK/4.0.19P9"}
     try:
-        decoded = pyjwt.decode(jwt_token, options={"verify_signature": False})
-        lock_region = decoded.get('lock_region', 'IND')
-        return lock_region.upper()
+        r = requests.post("https://100067.connect.garena.com/oauth/guest/token/grant",
+                          data=payload, headers=headers, verify=False, timeout=10)
+        data = r.json()
+        return data.get("access_token"), data.get("open_id")
     except Exception as e:
-        print(f"Region decode error: {e}")
-        return 'IND'
+        print("Guest login error:", e)
+        return None, None
 
-def get_region_url(region):
-    region = region.upper()
-    if region == "IND":
-        return "https://client.ind.freefiremobile.com"
-    elif region in ["BR", "US", "SAC", "NA"]:
-        return "https://client.us.freefiremobile.com/"
-    else:
-        return "https://clientbp.ggblueshark.com/"
-
-def create_join_payload(clan_id):
-    message = reqClan_pb2.MyMessage()
-    message.field_1 = int(clan_id)
-    serialized_data = message.SerializeToString()
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    encrypted_data = cipher.encrypt(pad(serialized_data, AES.block_size))
-    return encrypted_data
-
-def get_clan_info(base_url, jwt_token, clan_id):
+# Convert access_token to JWT using external API
+def get_jwt_from_access_token(access_token):
+    url = f"https://rizerxaccessjwt.vercel.app/rizer?access_token={access_token}"
     try:
-        json_data = json.dumps({"1": int(clan_id), "2": 1})
-        my_data = encode_id_clan_pb2.MyData()
-        json_obj = json.loads(json_data)
-        my_data.field1 = json_obj["1"]
-        my_data.field2 = json_obj["2"]
-
-        data_bytes = my_data.SerializeToString()
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        encrypted_info_data = cipher.encrypt(pad(data_bytes, 16))
-
-        info_url = f"{base_url}/GetClanInfoByClanID"
-        
-        headers = {
-            "Expect": "100-continue",
-            "Authorization": f"Bearer {jwt_token}",
-            "X-Unity-Version": "2018.4.11f1",
-            "X-GA": "v1 1",
-            "ReleaseVersion": freefire_version,
-            "Content-Type": "application/octet-stream",
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-A305F Build/RP1A.200720.012)",
-            "Host": base_url.replace("https://", ""),
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip"
-        }
-
-        with httpx.Client(timeout=30.0) as client_info:
-            info_response = client_info.post(info_url, headers=headers, content=encrypted_info_data)
-        
-        if info_response.status_code == 200:
-            resp_info = data_pb2.response()
-            resp_info.ParseFromString(info_response.content)
-            return {
-                "clan_name": getattr(resp_info, "special_code", "Unknown"),
-                "clan_level": getattr(resp_info, "level", "Unknown")
-            }
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        if data.get("success") and "jwt" in data:
+            jwt_token = data["jwt"]
+            account_id, nickname, region = decode_jwt(jwt_token)
+            return jwt_token, account_id, nickname, region
         else:
-            return {"clan_name": "Unknown", "clan_level": "Unknown"}
+            print("External API error:", data)
+            return None, None, None, None
     except Exception as e:
-        print(f"Clan info error: {e}")
-        return {"clan_name": "Unknown", "clan_level": "Unknown"}
+        print("get_jwt_from_access_token error:", e)
+        return None, None, None, None
 
-@app.route('/join', methods=['GET'])
-def join_clan():
-    clan_id = request.args.get('clan_id')
-    jwt_token = request.args.get('jwt')
-    uid = request.args.get('uid')
-    password = request.args.get('password')
+# Join clan request
+def request_clan(jwt_token, clan_id, region):
+    server_url = get_server_url(region)
+    msg = ReqCLan_pb2.MyMessage()
+    msg.field_1 = int(clan_id)
+    payload = encrypt_payload(msg.SerializeToString())
+    headers = GAME_HEADERS.copy()
+    headers["Authorization"] = f"Bearer {jwt_token}"
+    url = f"{server_url}/RequestJoinClan"
+    r = requests.post(url, headers=headers, data=payload, verify=False)
+    return r.status_code, r.text
 
+# Quit clan request
+def quit_clan(jwt_token, clan_id, region):
+    server_url = get_server_url(region)
+    msg = QuitClanReq_pb2.QuitClanReq()
+    msg.field_1 = int(clan_id)
+    payload = encrypt_payload(msg.SerializeToString())
+    headers = GAME_HEADERS.copy()
+    headers["Authorization"] = f"Bearer {jwt_token}"
+    url = f"{server_url}/QuitClan"
+    r = requests.post(url, headers=headers, data=payload, verify=False)
+    return r.status_code, r.text
+
+# Resolve login method and return (jwt, uid, name, region, method)
+def resolve_login(jwt_token=None, uid=None, password=None, access_token=None):
+    # 1. Direct JWT
+    if jwt_token:
+        uid, name, region = decode_jwt(jwt_token)
+        if uid:
+            return jwt_token, uid, name, region, "JWT"
+        else:
+            return None, None, None, None, "Invalid JWT"
+
+    # 2. Access token (new)
+    if access_token:
+        jwt_token, uid, name, region = get_jwt_from_access_token(access_token)
+        if jwt_token:
+            return jwt_token, uid, name, region, "ACCESS_TOKEN"
+        else:
+            return None, None, None, None, "Access token conversion failed"
+
+    # 3. UID + password
+    if uid and password:
+        acc_token, open_id = guest_login(uid, password)
+        if not acc_token:
+            return None, None, None, None, "Guest login failed"
+        jwt_token = perform_major_login(acc_token, open_id)
+        if not jwt_token:
+            return None, None, None, None, "Major login failed"
+        uid, name, region = decode_jwt(jwt_token)
+        return jwt_token, uid, name, region, "UID_PASS"
+
+    return None, None, None, None, "No login credentials provided"
+
+# ---------------------------
+# Endpoints
+# ---------------------------
+
+@app.route("/")
+def home():
+    data = OrderedDict()
+    data["success"] = True
+    data["message"] = "Free Fire Clan API"
+    data["examples"] = {
+        "request_clan_jwt": "/request_clan?clan_id=123&jwt=JWT",
+        "request_clan_uidpass": "/request_clan?clan_id=123&uid=123&pass=PASS",
+        "request_clan_accesstoken": "/request_clan_access?clan_id=123&access_token=TOKEN",
+        "quit_clan_jwt": "/quit_clan?clan_id=123&jwt=JWT",
+        "quit_clan_uidpass": "/quit_clan?clan_id=123&uid=123&pass=PASS",
+        "quit_clan_accesstoken": "/quit_clan_access?clan_id=123&access_token=TOKEN"
+    }
+    return Response(json.dumps(data, indent=2), mimetype="application/json")
+
+# Original endpoints (jwt or uid+pass)
+@app.route("/request_clan")
+def api_request():
+    clan_id = request.args.get("clan_id")
+    jwt_token = request.args.get("jwt")
+    uid = request.args.get("uid")
+    password = request.args.get("pass")
     if not clan_id:
-        return jsonify({
-            "error": "clan_id is required"
-        }), 400
+        return jsonify({"success": False, "error": "clan_id required"})
 
-    final_token = jwt_token
-    
-    if uid and password and not final_token:
-        final_token = get_jwt_token_from_api(uid, password)
-        if not final_token:
-            return jsonify({
-                "error": "Failed to get JWT token from uid/password"
-            }), 400
+    final_jwt, uid, name, region, method = resolve_login(jwt_token=jwt_token, uid=uid, password=password)
+    if not final_jwt:
+        return jsonify({"success": False, "error": method})
 
-    if not final_token:
-        return jsonify({
-            "error": "Either jwt token or uid/password is required"
-        }), 400
+    code, text = request_clan(final_jwt, clan_id, region)
+    success = (code == 200)
+    return jsonify({
+        "success": success,
+        "action": "Join Clan",
+        "clan_id": clan_id,
+        "uid": uid,
+        "name": name,
+        "region": region,
+        "login_method": method,
+        "developer": API_INFO["developer"],
+        "telegram": API_INFO["telegram"],
+        "api_version": API_INFO["version"],
+        "server_response": text
+    })
 
-    final_region = get_region_from_jwt(final_token)
+@app.route("/quit_clan")
+def api_quit():
+    clan_id = request.args.get("clan_id")
+    jwt_token = request.args.get("jwt")
+    uid = request.args.get("uid")
+    password = request.args.get("pass")
+    if not clan_id:
+        return jsonify({"success": False, "error": "clan_id required"})
 
-    try:
-        base_url = get_region_url(final_region)
-        url = f"{base_url}/RequestJoinClan"
-        host = base_url.replace("https://", "")
+    final_jwt, uid, name, region, method = resolve_login(jwt_token=jwt_token, uid=uid, password=password)
+    if not final_jwt:
+        return jsonify({"success": False, "error": method})
 
-        encrypted_data = create_join_payload(clan_id)
+    code, text = quit_clan(final_jwt, clan_id, region)
+    success = (code == 200)
+    return jsonify({
+        "success": success,
+        "action": "Quit Clan",
+        "clan_id": clan_id,
+        "uid": uid,
+        "name": name,
+        "region": region,
+        "login_method": method,
+        "developer": API_INFO["developer"],
+        "telegram": API_INFO["telegram"],
+        "api_version": API_INFO["version"],
+        "server_response": text
+    })
 
-        headers = {
-            "Expect": "100-continue",
-            "Authorization": f"Bearer {final_token}",
-            "X-Unity-Version": "2018.4.11f1",
-            "X-GA": "v1 1",
-            "ReleaseVersion": freefire_version,
-            "Content-Type": "application/octet-stream",
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; SM-A305F Build/RP1A.200720.012)",
-            "Host": host,
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip"
-        }
+# New endpoints using access_token
+@app.route("/request_clan_access")
+def api_request_access():
+    clan_id = request.args.get("clan_id")
+    access_token = request.args.get("access_token")
+    if not clan_id:
+        return jsonify({"success": False, "error": "clan_id required"})
+    if not access_token:
+        return jsonify({"success": False, "error": "access_token required"})
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(url, headers=headers, content=encrypted_data)
+    final_jwt, uid, name, region, method = resolve_login(access_token=access_token)
+    if not final_jwt:
+        return jsonify({"success": False, "error": method})
 
-        clan_info = get_clan_info(base_url, final_token, clan_id)
+    code, text = request_clan(final_jwt, clan_id, region)
+    success = (code == 200)
+    return jsonify({
+        "success": success,
+        "action": "Join Clan",
+        "clan_id": clan_id,
+        "uid": uid,
+        "name": name,
+        "region": region,
+        "login_method": method,
+        "developer": API_INFO["developer"],
+        "telegram": API_INFO["telegram"],
+        "api_version": API_INFO["version"],
+        "server_response": text
+    })
 
-        if response.status_code == 200:
-            result = {
-                "clan_id": clan_id,
-                "region": final_region,
-                "clan_name": clan_info.get("clan_name", "Unknown"),
-                "clan_level": clan_info.get("clan_level", "Unknown"),
-                "message": "Request sent successfully",
-                "status_code": response.status_code,
-                "timestamp": time.time(),
-                "success": True
-            }
-        else:
-            result = {
-                "clan_id": clan_id,
-                "region": final_region,
-                "clan_name": clan_info.get("clan_name", "Unknown"),
-                "message": f"Failed with status {response.status_code}",
-                "status_code": response.status_code,
-                "timestamp": time.time(),
-                "success": False
-            }
+@app.route("/quit_clan_access")
+def api_quit_access():
+    clan_id = request.args.get("clan_id")
+    access_token = request.args.get("access_token")
+    if not clan_id:
+        return jsonify({"success": False, "error": "clan_id required"})
+    if not access_token:
+        return jsonify({"success": False, "error": "access_token required"})
 
-        return jsonify(result)
+    final_jwt, uid, name, region, method = resolve_login(access_token=access_token)
+    if not final_jwt:
+        return jsonify({"success": False, "error": method})
 
-    except Exception as e:
-        return jsonify({
-            "error": "Server error",
-            "details": str(e)
-        }), 500
+    code, text = quit_clan(final_jwt, clan_id, region)
+    success = (code == 200)
+    return jsonify({
+        "success": success,
+        "action": "Quit Clan",
+        "clan_id": clan_id,
+        "uid": uid,
+        "name": name,
+        "region": region,
+        "login_method": method,
+        "developer": API_INFO["developer"],
+        "telegram": API_INFO["telegram"],
+        "api_version": API_INFO["version"],
+        "server_response": text
+    })
 
-if __name__ == '__main__':
-    import sys
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
-    print(f"Starting Clan Join API on port {port} ...")
-    app.run(host='0.0.0.0', port=port, debug=False)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
