@@ -1,3 +1,6 @@
+#𝗚𝗨𝗜𝗟𝗗 𝗝𝗢𝗜𝗡 & 𝗟𝗘𝗔𝗩𝗘 𝗔𝗣𝗜 𝗦𝗥𝗖 
+#𝗕𝗬 𝗧𝗚 𝗜𝗗 : @𝗦𝗧𝗔𝗥_𝗚𝗠𝗥 
+#𝗧𝗚 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 : @𝗣𝗩𝗧_𝗦𝗧𝗔𝗥
 from flask import Flask, request, jsonify, Response
 import requests
 import jwt
@@ -17,8 +20,8 @@ app = Flask(__name__)
 OB = "OB53"
 
 API_INFO = {
-    "developer": "RIZER",
-    "telegram": "@Beotherjk",
+    "developer": "𝗦𝗧𝗔𝗥",
+    "telegram": "@STAR_GMR",
     "api_name": "FF GUILD JOIN/LEAVE API",
     "version": OB
 }
@@ -44,10 +47,10 @@ LOGIN_HEADERS = GAME_HEADERS.copy()
 # Region → Server URL mapping
 REGION_SERVER_MAP = {
     "IND": "https://client.ind.freefiremobile.com",   # India
-    "ME":  "https://clientbp.ggblueshark.com",        # Middle East
+    "ME":  "https://clientbp.ggpolarbear.com",        # Middle East
     "VN":  "https://clientbp.ggpolarbear.com",        # Vietnam
-    "BD":  "https://clientbp.ggwhitehawk.com",        # Bangladesh
-    "PK":  "https://clientbp.ggblueshark.com",        # Pakistan
+    "BD":  "https://clientbp.ggpolarbear.com",        # Bangladesh
+    "PK":  "https://clientbp.ggpolarbear.com",        # Pakistan
     "SG":  "https://clientbp.ggpolarbear.com",        # Singapore
     "BR":  "https://client.us.freefiremobile.com",    # Brazil
     "NA":  "https://client.us.freefiremobile.com",    # North America
@@ -55,7 +58,7 @@ REGION_SERVER_MAP = {
     "RU":  "https://clientbp.ggpolarbear.com",        # Russia
     "TH":  "https://clientbp.ggpolarbear.com",        # Thailand
 }
-DEFAULT_SERVER_URL = "https://clientbp.ggblueshark.com"   # fallback
+DEFAULT_SERVER_URL = "https://clientbp.ggpolarbear.com"   # fallback
 LOGIN_URL = "https://loginbp.ggpolarbear.com"             # same for all regions
 
 # Helper: encrypt payload with AES-CBC
@@ -140,12 +143,12 @@ def guest_login(uid, password):
 
 # Convert access_token to JWT using external API
 def get_jwt_from_access_token(access_token):
-    url = f"https://rizerxaccessjwt.vercel.app/rizer?access_token={access_token}"
+    url = f"https://acesstojwt-sigma.vercel.app/token?access_token={access_token}"
     try:
         r = requests.get(url, timeout=10)
         data = r.json()
-        if data.get("success") and "jwt" in data:
-            jwt_token = data["jwt"]
+        if data.get("success") and "token" in data:
+            jwt_token = data["token"]
             account_id, nickname, region = decode_jwt(jwt_token)
             return jwt_token, account_id, nickname, region
         else:
@@ -349,3 +352,7 @@ def api_quit_access():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+    
+ #𝗚𝗨𝗜𝗟𝗗 𝗝𝗢𝗜𝗡 & 𝗟𝗘𝗔𝗩𝗘 𝗔𝗣𝗜 𝗦𝗥𝗖 
+#𝗕𝗬 𝗧𝗚 𝗜𝗗 : @𝗦𝗧𝗔𝗥_𝗚𝗠𝗥 
+#𝗧𝗚 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 : @𝗣𝗩𝗧_𝗦𝗧𝗔𝗥
